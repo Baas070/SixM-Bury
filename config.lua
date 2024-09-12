@@ -1,5 +1,5 @@
 Config = {
-    Framework = "ESX", -- Set "QBCore" or "ESX" based on the framework being used
+    Framework = "QBCore", -- Set "QBCore" or "ESX" based on the framework being used
     ShovelObject = "prop_tool_shovel2",
     ShovelIdleBone = 57005,
     ShovelDiggingBone = 28422,
@@ -31,7 +31,7 @@ Config = {
     StartDiggingText = "~INPUT_PICKUP~ Bury",
     DiggingText = "~INPUT_PICKUP~ Bury\n~INPUT_VEH_DUCK~ Stop",
 
-    ShovelItem = 'water', -- Shovel item in inventory
+    ShovelItem = 'sandwich', -- Shovel item in inventory
 
     groundHashes = {
         [-1885547121] = {name = "Dirt", canDig = true},
@@ -61,3 +61,4 @@ Config = {
         [1639053622] = {name = "Concrete 3", canDig = false},
     },
 }
+

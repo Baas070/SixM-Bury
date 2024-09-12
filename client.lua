@@ -1,397 +1,3 @@
-local spawnedObjects = {}  -- Table to store references to the spawned objects along with their IDs
-local canAdjustHeight = true -- Flag to control when height adjustment is allowed
-
-RegisterNetEvent('StartBuryingEvent')
-AddEventHandler('StartBuryingEvent', function()
-    local objectName = 'prop_pile_dirt_01'  -- Specific prop to spawn
-    
-    local randomId = math.random(10000, 99999)  -- Generate a random ID
-    
-    local playerPed = PlayerPedId()
-    local playerCoords = GetEntityCoords(playerPed)
-    local forwardVector = GetEntityForwardVector(playerPed)
-    
-    local spawnCoords = playerCoords + forwardVector * 1.5  -- Calculate spawn coordinates in front of the player
-    local modelHash = GetHashKey(objectName)
-
-    RequestModel(modelHash)
-    while not HasModelLoaded(modelHash) do
-        Wait(1)
-    end
-
-    -- Initial spawn at the player's position
-    local obj = CreateObjectNoOffset(modelHash, spawnCoords.x, spawnCoords.y, spawnCoords.z, false, true, false)
-    SetEntityAsMissionEntity(obj, true, true)  -- Keep this to ensure the object isn't cleaned up
-
-    spawnedObjects[randomId] = obj  -- Store the object reference with its ID
-
-    -- Place the object properly on the ground
-    PlaceObjectOnGroundProperly(obj)
-    FreezeEntityPosition(obj, true)
-    
-    -- Adjust the object to your initial height
-    local initialHeight = -1.50
-    local objCoords = GetEntityCoords(obj)
-    SetEntityCoordsNoOffset(obj, objCoords.x, objCoords.y, objCoords.z + initialHeight, true, true, true)
-
-    SetModelAsNoLongerNeeded(modelHash)
-
-    -- Send the object's spawn data to the server with its coordinates
-    TriggerServerEvent('broadcastObjectSpawn', objectName, randomId, objCoords.x, objCoords.y, objCoords.z)
-end)
-
-RegisterNetEvent('spawnObjectOnClient')
-AddEventHandler('spawnObjectOnClient', function(objectName, objectId, x, y, z)
-    local modelHash = GetHashKey(objectName)
-
-    RequestModel(modelHash)
-    while not HasModelLoaded(modelHash) do
-        Wait(1)
-    end
-
-    local obj = CreateObjectNoOffset(modelHash, x, y, z, false, true, false)
-    SetEntityAsMissionEntity(obj, true, true)  -- Keep this to ensure the object isn't cleaned up
-
-    spawnedObjects[objectId] = obj  -- Store the object reference with its ID
-
-    PlaceObjectOnGroundProperly(obj)
-    FreezeEntityPosition(obj, true)
-    
-    -- Adjust the object to your initial height (keeping the logic intact)
-    local initialHeight = -1.50
-    SetEntityCoordsNoOffset(obj, x, y, z + initialHeight, true, true, true)
-
-    SetModelAsNoLongerNeeded(modelHash)
-end)
-
--- Create a flag to track whether debug has been printed for an object and player
-local debugPrinted = {}
-
--- Table to store player and object references when animation is detected
-local animationPlayers = {}
-
--- Function to store playerSrc and objectId only if not already stored, then send it to the server
-function StorePlayerAndObject(playerSrc, objectId)
-    if not animationPlayers[playerSrc] then
-        animationPlayers[playerSrc] = objectId
-        print("Stored player src: " .. playerSrc .. " with object ID: " .. objectId)
-
-        -- Send the stored data to the server
-        TriggerServerEvent('sendPlayerAndObjectData', playerSrc, objectId)
-    end
-end
-
-Citizen.CreateThread(function()
-    while true do
-        Citizen.Wait(0)
-        
-        local playerPed = PlayerPedId()
-        local playerCoords = GetEntityCoords(playerPed)
-        local playerSrc = GetPlayerServerId(PlayerId())  -- Get the player's server-side ID (src)
-        
-        for objectId, obj in pairs(spawnedObjects) do
-            if DoesEntityExist(obj) then
-                local objCoords = GetEntityCoords(obj)
-                local distance = #(playerCoords - objCoords)
-                
-                if distance <= 3.0 then
-                    -- Check if the player is NOT in any restricted animation before allowing height adjustment
-                    if not (IsEntityPlayingAnim(playerPed, 'combat@damage@writhe', 'writhe_loop', 3) or IsEntityPlayingAnim(playerPed, 'dead', 'dead_a', 3)) then
-                        -- Check if "E" is pressed and if height adjustment is allowed
-                        if IsControlJustPressed(0, 38) and canAdjustHeight then  -- Check if "E" is pressed (38 is the control ID for "E")
-                            canAdjustHeight = false  -- Prevent further adjustments until re-enabled
-                            TriggerServerEvent('adjustObjectHeight', objectId)  -- Send the object ID to the server to adjust its height
-
-                            -- Re-enable height adjustment after 1 second delay
-                            Citizen.Wait(1000)
-                            canAdjustHeight = true
-                        end
-                    else
-                        -- Check if the player and object combination has already been debugged
-                        if not debugPrinted[playerSrc] or not debugPrinted[playerSrc][objectId] then
-                            -- Debug: Player is in a restricted animation
-                            print("Player is in a restricted animation and cannot press E.")
-                            
-                            -- Call the function to store playerSrc and objectId, and send to the server
-                            StorePlayerAndObject(playerSrc, objectId)
-
-                            -- Initialize table for the player if it doesn't exist
-                            if not debugPrinted[playerSrc] then
-                                debugPrinted[playerSrc] = {}
-                            end
-
-                            -- Mark that the debug has been printed for this player-object combination
-                            debugPrinted[playerSrc][objectId] = true
-                        end
-                    end
-
-                    -- Check if debug has been printed for this object
-                    if not debugPrinted[objectId] then
-                        -- Animation Check: Determine which animation is playing and output debug info
-                        if IsEntityPlayingAnim(playerPed, 'combat@damage@writhe', 'writhe_loop', 3) then
-                            print("Player src: " .. playerSrc .. " is playing 'writhe_loop' animation near object ID: " .. objectId)
-                        elseif IsEntityPlayingAnim(playerPed, 'dead', 'dead_a', 3) then
-                            print("Player src: " .. playerSrc .. " is playing 'dead_a' animation near object ID: " .. objectId)
-                        end
-                        -- Mark that the debug has been printed for this object
-                        debugPrinted[objectId] = true
-                    end
-                end
-            end
-        end
-    end
-end)
-
-
--- Handle receiving targeted data from the server
-RegisterNetEvent('receiveTargetedData')
-AddEventHandler('receiveTargetedData', function(targetedPlayerId, objectId)
-    -- Debugging: Print the received data
-    print("Received from server -> Targeted Player ID: " .. targetedPlayerId .. ", Object ID: " .. objectId)
-end)
-
-
-
-RegisterNetEvent('adjustObjectHeightOnClient')
-AddEventHandler('adjustObjectHeightOnClient', function(objectId)
-    local obj = spawnedObjects[objectId]
-    
-    if DoesEntityExist(obj) then
-        -- Debug: Print the object ID when height adjustment starts
-        print("Adjusting height for object ID:", objectId)
-
-        Citizen.CreateThread(function()
-            local objCoords = GetEntityCoords(obj)
-            local targetZ = objCoords.z + 0.1  -- Adjust by 10 centimeters smoothly
-            while objCoords.z < targetZ do
-                objCoords = GetEntityCoords(obj)
-                SetEntityCoordsNoOffset(obj, objCoords.x, objCoords.y, objCoords.z + 0.01, true, true, true)
-                Citizen.Wait(20)  -- Adjust this for smoothness/speed
-            end
-        end)
-    else
-        -- Debug: Print an error if the object doesn't exist
-        print("Object with ID", objectId, "does not exist.")
-    end
-end)
-
-RegisterNetEvent('lowerObjectHeightOnClient')
-AddEventHandler('lowerObjectHeightOnClient', function(objectId)
-    local obj = spawnedObjects[objectId]
-    
-    if DoesEntityExist(obj) then
-        -- Debug: Print the object ID when height lowering starts
-        print("Lowering height for object ID:", objectId)
-
-        Citizen.CreateThread(function()
-            local objCoords = GetEntityCoords(obj)
-            local targetZ = objCoords.z - 0.1  -- Lower by 10 centimeters smoothly
-            while objCoords.z > targetZ do
-                objCoords = GetEntityCoords(obj)
-                SetEntityCoordsNoOffset(obj, objCoords.x, objCoords.y, objCoords.z - 0.01, true, true, true)
-                Citizen.Wait(20)  -- Adjust this for smoothness/speed
-            end
-        end)
-    else
-        -- Debug: Print an error if the object doesn't exist
-        print("Object with ID", objectId, "does not exist.")
-    end
-end)
-
-
-
-
-local ShovelIsActive = false
-local IsDigging = false 
-local DigText = Config.StartDiggingText
-
--- Function to get the ground hash at the player's location
-function GetGroundHash(entity)
-    local coords = GetEntityCoords(entity)
-    local num = StartShapeTestCapsule(coords.x, coords.y, coords.z + 4, coords.x, coords.y, coords.z - 2.0, 1, 1, entity, 7)
-    local _, _, _, _, groundHash = GetShapeTestResultEx(num)
-    return groundHash
-end
-
--- Function to translate the ground hash to a readable surface type and dig permission
-function TranslateGroundHash(hash)
-    local groundData = Config.groundHashes[hash]
-    if groundData then
-        return groundData.name, groundData.canDig
-    else
-        return "Unknown Surface", false
-    end
-end
-
-function StartDigging()
-    local playerPed = PlayerPedId()
-    local playerCoords = GetEntityCoords(playerPed)
-    local groundHash = GetGroundHash(playerPed)
-    local surfaceType, canDig = TranslateGroundHash(groundHash)
-
-    -- Check if any spawned objects are within a 5-meter radius
-    local isNearbyObject = false
-    for objectId, obj in pairs(spawnedObjects) do
-        if DoesEntityExist(obj) then
-            local objCoords = GetEntityCoords(obj)
-            local distance = #(playerCoords - objCoords)
-            if distance <= 5.0 then
-                print("Debug: Found a prop within 5 meters. Object ID: " .. objectId)
-                isNearbyObject = true
-                break  -- Exit the loop once an object is found within the radius
-            end
-        end
-    end
-
-    if canDig then
-        IsDigging = true
-        DigText = Config.DiggingText
-
-        -- Play the digging animation (looping)
-        ShovelHoldingAnimation()
-
-        -- Disable height adjustment until animation completes
-        canAdjustHeight = false
-
-        print("Digging started on surface: " .. surfaceType)
-        
-        -- Trigger the event to spawn the prop if no nearby object is found
-        if not isNearbyObject then
-            TriggerEvent('StartBuryingEvent')
-        else
-            print("Debug: Skipping object spawn due to nearby prop.")
-        end
-
-        -- Re-enable height adjustment after a delay
-        Citizen.Wait(1000)
-        canAdjustHeight = true
-
-    else
-        print("You cannot dig on this surface: " .. surfaceType)
-        IsDigging = false
-    end
-end
-
-function ShovelHoldingAnimation()
-    local HoldingAnimDict = Config.ShovelAnimDict
-    RequestAnimDict(HoldingAnimDict)
-    while not HasAnimDictLoaded(HoldingAnimDict) do
-        Citizen.Wait(150)
-    end
-
-    DetachEntity(ShovelObject, false, false)
-    local ShovelDiggingBone = GetPedBoneIndex(PlayerPedId(), Config.ShovelDiggingBone)
-    AttachEntityToEntity(ShovelObject, PlayerPedId(), ShovelDiggingBone, Config.ShovelDiggingPlacement.XCoords, Config.ShovelDiggingPlacement.YCoords, Config.ShovelDiggingPlacement.ZCoords, Config.ShovelDiggingPlacement.XRotation, Config.ShovelDiggingPlacement.YRotation, Config.ShovelDiggingPlacement.ZRotation, true, true, true, true, 1, true)
-
-    -- Play the animation in a loop (-1 as duration, and flag 1 to loop it)
-    TaskPlayAnim(PlayerPedId(), HoldingAnimDict, Config.ShovelAnim, 1.0, 1.5, -1, 1, 0, false, false, false)
-end
-
-
-
-Citizen.CreateThread(function()
-    while true do 
-        local sleep = 500 -- Default wait time
-        local playerPed = PlayerPedId()
-
-        -- Handle scenarios where shovel should be removed
-        if IsPedRagdoll(playerPed) or IsPedInAnyVehicle(playerPed, false) then 
-            RemoveShovel()
-            ShovelIsActive = false
-            IsDigging = false
-            DigText = Config.StartDiggingText
-        end
-
-        if ShovelIsActive then 
-            sleep = 10 -- Reduced wait time for responsiveness
-
-            -- Show the prompt to start digging
-            DrawText3D(DigText, GetEntityCoords(playerPed))
-            if IsControlJustPressed(0, Config.DigButton) then 
-                Citizen.Wait(500)  -- Wait half a second for `E`
-                StartDigging()  -- Start digging action
-            end
-        end
-
-        Citizen.Wait(sleep)
-    end
-end)
-
--- Function to handle the shovel holding animation
-function ShovelHoldingAnimation()
-    local HoldingAnimDict = Config.ShovelAnimDict
-    RequestAnimDict(HoldingAnimDict)
-    while not HasAnimDictLoaded(HoldingAnimDict) do
-        Citizen.Wait(150)
-    end
-
-    DetachEntity(ShovelObject, false, false)
-    local ShovelDiggingBone = GetPedBoneIndex(PlayerPedId(), Config.ShovelDiggingBone)
-    AttachEntityToEntity(ShovelObject, PlayerPedId(), ShovelDiggingBone, Config.ShovelDiggingPlacement.XCoords, Config.ShovelDiggingPlacement.YCoords, Config.ShovelDiggingPlacement.ZCoords, Config.ShovelDiggingPlacement.XRotation, Config.ShovelDiggingPlacement.YRotation, Config.ShovelDiggingPlacement.ZRotation, true, true, true, true, 1, true)
-    TaskPlayAnim(PlayerPedId(), HoldingAnimDict, Config.ShovelAnim, 1.0, 1.5, -1, 2, 0.79, nil, nil, nil)
-end
-
--- Function to exit digging mode
-function ExitDigging()
-    StopAnimTask(PlayerPedId(), Config.ShovelAnimDict, Config.ShovelAnim, 1.5)
-    DetachEntity(ShovelObject, false, false)
-    local ShovelIdleBone = GetPedBoneIndex(PlayerPedId(), Config.ShovelIdleBone)
-    AttachEntityToEntity(ShovelObject, PlayerPedId(), ShovelIdleBone, Config.ShovelIdlePlacement.XCoords, Config.ShovelIdlePlacement.YCoords, Config.ShovelIdlePlacement.ZCoords, Config.ShovelIdlePlacement.XRotation, Config.ShovelIdlePlacement.YRotation, Config.ShovelIdlePlacement.ZRotation, true, true, true, true, 1, true)
-end
-
--- Function to remove the shovel
-function RemoveShovel()
-    StopAnimTask(PlayerPedId(), Config.ShovelAnimDict, Config.ShovelAnim, 1.5)
-    DetachEntity(ShovelObject, false, false)
-    if DoesEntityExist(ShovelObject) then 
-        DeleteObject(ShovelObject)
-    end
-    ShovelIsActive = false
-end
-
--- Event to handle shovel usage
-RegisterNetEvent("SxM-bury:UseShovel", function()
-    if ShovelIsActive == false then 
-        GrabShovel()
-        ShovelIsActive = true 
-    elseif ShovelIsActive == true then 
-        RemoveShovel()
-    end
-end)
-
--- Function to grab the shovel
-function GrabShovel()
-    if DoesEntityExist(ShovelObject) then 
-        DeleteObject(ShovelObject)
-    end
-    local ShovelModel = Config.ShovelObject
-    RequestModel(ShovelModel)
-    while not HasModelLoaded(ShovelModel) do
-        Citizen.Wait(150)
-    end
-    ShovelObject = CreateObjectNoOffset(ShovelModel, GetEntityCoords(PlayerPedId()), true, true, false)
-    SetEntityCollision(ShovelObject, false, false)
-    local ShovelIdleBone = GetPedBoneIndex(PlayerPedId(), Config.ShovelIdleBone)
-    AttachEntityToEntity(ShovelObject, PlayerPedId(), ShovelIdleBone, Config.ShovelIdlePlacement.XCoords, Config.ShovelIdlePlacement.YCoords, Config.ShovelIdlePlacement.ZCoords, Config.ShovelIdlePlacement.XRotation, Config.ShovelIdlePlacement.YRotation, Config.ShovelIdlePlacement.ZRotation, true, true, true, true, 1, true)
-end
-
--- Event to clean up the shovel on resource stop
-AddEventHandler('onResourceStop', function(resourceName)
-    if GetCurrentResourceName() == resourceName then
-        DeleteObject(ShovelObject)
-    end
-end)
-
--- Function to draw 3D text
-function DrawText3D(msg, coords)
-    AddTextEntry('floatingHelpNotification', msg)
-    SetFloatingHelpTextWorldPosition(1, coords)
-    SetFloatingHelpTextStyle(1, 1, 2, -1, 3, 0)
-    BeginTextCommandDisplayHelp('floatingHelpNotification')
-    EndTextCommandDisplayHelp(2, false, false, -1)
-end
-
-
 -- Carry and drop in trunk
 
 local attachment = {
@@ -1006,3 +612,61 @@ Citizen.CreateThread(function()
 end)
 
 
+-- USE THIS WHEN YOU WANT TO ADD NEW GROUND HASH TYPES TO THE CONFIG KEEP CONFIG AND THIS UP TO DATE WITH EACH OTHER AS THAT WILL HELP YOU KNOW IF YOU HAVE THAT ALREADY IN THE CONFIG OR NOT 
+
+
+-- -- Control variable to determine if checks should be performed
+-- local shouldCheck = false
+
+-- -- Predefined mapping of hash values to readable surface types
+-- local groundHashes = {
+--     [-1885547121] = "Dirt",
+--     [282940568] = "Road",
+--     [510490462] = "Sand",
+--     [951832588] = "Sand 2",
+--     [2128369009] = "Grass and Dirt Combined",
+--     [-840216541] = "Rock Surface",
+--     [-1286696947] = "Grass and Dirt Combined 2",
+--     [1333033863] = "Grass",
+--     [1187676648] = "Concrete",
+--     [1144315879] = "Grass 2",
+--     [-1942898710] = "Gravel, Dirt, and Cobblestone",
+--     [560985072] = "Sand Grass",
+--     [-1775485061] = "Cement",
+--     [581794674] = "Grass 3",
+--     [1993976879] = "Cement 2",
+--     [-1084640111] = "Cement 3",
+--     [-700658213] = "Dirt with Grass",
+--     [0] = "Air",
+--     [-124769592] = "Dirt with Grass 4",
+--     [-461750719] = "Dirt with Grass 5",
+--     [-1595148316] = "Concrete 4", 
+--     [1288448767] = "Water",
+--     [765206029] = "Marble Tiles",
+--     [-1186320715] = "Pool Water",
+--     [1639053622] = "Concrete 3",  
+-- }
+
+-- function GetGroundHash(entity)
+--     local coords = GetEntityCoords(entity)
+--     local num = StartShapeTestCapsule(coords.x, coords.y, coords.z + 4, coords.x, coords.y, coords.z - 2.0, 1, 1, entity, 7)
+--     local _, _, _, _, groundHash = GetShapeTestResultEx(num)
+--     return groundHash
+-- end
+
+-- function TranslateGroundHash(hash)
+--     return groundHashes[hash] or "Unknown Surface"
+-- end
+
+-- -- Conditionally run the loop only if shouldCheck is true
+-- if shouldCheck then
+--     Citizen.CreateThread(function()
+--         while true do
+--             local entity = PlayerPedId() -- Use PlayerPedId as the default entity, which represents the player character
+--             local groundHash = GetGroundHash(entity)
+--             local surfaceType = TranslateGroundHash(groundHash)
+--             print("Ground Surface Type: " .. surfaceType .. " (Hash: " .. groundHash .. ")")
+--             Citizen.Wait(5000) -- Wait for 5 seconds
+--         end
+--     end)
+-- end
