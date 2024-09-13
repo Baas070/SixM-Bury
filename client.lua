@@ -1,3 +1,257 @@
+local spawnedObjects = {}  -- Table to store references to the spawned objects along with their IDs
+
+RegisterNetEvent('StartBuryingEvent')
+AddEventHandler('StartBuryingEvent', function()
+    local objectName = 'prop_pile_dirt_01'  -- Specific prop to spawn
+    
+    local randomId = math.random(10000, 99999)  -- Generate a random ID
+    
+    local playerPed = PlayerPedId()
+    local playerCoords = GetEntityCoords(playerPed)
+    local forwardVector = GetEntityForwardVector(playerPed)
+    
+    local spawnCoords = playerCoords + forwardVector * 1.5  -- Calculate spawn coordinates in front of the player
+    local modelHash = GetHashKey(objectName)
+
+    RequestModel(modelHash)
+    while not HasModelLoaded(modelHash) do
+        Wait(1)
+    end
+
+    -- Initial spawn at the player's position
+    local obj = CreateObjectNoOffset(modelHash, spawnCoords.x, spawnCoords.y, spawnCoords.z, false, true, false)
+    SetEntityAsMissionEntity(obj, true, true)  -- Keep this to ensure the object isn't cleaned up
+
+    spawnedObjects[randomId] = obj  -- Store the object reference with its ID
+
+    -- Place the object properly on the ground
+    PlaceObjectOnGroundProperly(obj)
+    FreezeEntityPosition(obj, true)
+    
+    -- Adjust the object to your initial height
+    local initialHeight = -1.50
+    local objCoords = GetEntityCoords(obj)
+    SetEntityCoordsNoOffset(obj, objCoords.x, objCoords.y, objCoords.z + initialHeight, true, true, true)
+
+    SetModelAsNoLongerNeeded(modelHash)
+
+    -- Send the object's spawn data to the server with its coordinates
+    TriggerServerEvent('broadcastObjectSpawn', objectName, randomId, objCoords.x, objCoords.y, objCoords.z)
+end)
+
+RegisterNetEvent('spawnObjectOnClient')
+AddEventHandler('spawnObjectOnClient', function(objectName, objectId, x, y, z)
+    local modelHash = GetHashKey(objectName)
+
+    RequestModel(modelHash)
+    while not HasModelLoaded(modelHash) do
+        Wait(1)
+    end
+
+    local obj = CreateObjectNoOffset(modelHash, x, y, z, false, true, false)
+    SetEntityAsMissionEntity(obj, true, true)  -- Keep this to ensure the object isn't cleaned up
+
+    spawnedObjects[objectId] = obj  -- Store the object reference with its ID
+
+    PlaceObjectOnGroundProperly(obj)
+    FreezeEntityPosition(obj, true)
+    
+    -- Adjust the object to your initial height (keeping the logic intact)
+    local initialHeight = -1.50
+    SetEntityCoordsNoOffset(obj, x, y, z + initialHeight, true, true, true)
+
+    SetModelAsNoLongerNeeded(modelHash)
+end)
+
+Citizen.CreateThread(function()
+    while true do
+        Citizen.Wait(0)
+        
+        local playerPed = PlayerPedId()
+        local playerCoords = GetEntityCoords(playerPed)
+        
+        for objectId, obj in pairs(spawnedObjects) do
+            if DoesEntityExist(obj) then
+                local objCoords = GetEntityCoords(obj)
+                local distance = #(playerCoords - objCoords)
+                
+                if distance <= 3.0 then
+                    -- Removed the 3D text, but keep the keybind check
+                    if IsControlJustPressed(0, 38) then  -- Check if "E" is pressed (38 is the control ID for "E")
+                        TriggerServerEvent('adjustObjectHeight', objectId)  -- Send the object ID to the server to adjust its height
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- Handle height adjustment from the server
+RegisterNetEvent('adjustObjectHeightOnClient')
+AddEventHandler('adjustObjectHeightOnClient', function(objectId)
+    local obj = spawnedObjects[objectId]
+    if DoesEntityExist(obj) then
+        Citizen.CreateThread(function()
+            local objCoords = GetEntityCoords(obj)
+            local targetZ = objCoords.z + 0.1  -- Adjust by 10 centimeters smoothly
+            while objCoords.z < targetZ do
+                objCoords = GetEntityCoords(obj)
+                SetEntityCoordsNoOffset(obj, objCoords.x, objCoords.y, objCoords.z + 0.01, true, true, true)
+                Citizen.Wait(20)  -- Adjust this for smoothness/speed
+            end
+        end)
+    end
+end)
+
+
+local ShovelIsActive = false
+local IsDigging = false 
+local DigText = Config.StartDiggingText
+
+-- Function to get the ground hash at the player's location
+function GetGroundHash(entity)
+    local coords = GetEntityCoords(entity)
+    local num = StartShapeTestCapsule(coords.x, coords.y, coords.z + 4, coords.x, coords.y, coords.z - 2.0, 1, 1, entity, 7)
+    local _, _, _, _, groundHash = GetShapeTestResultEx(num)
+    return groundHash
+end
+
+-- Function to translate the ground hash to a readable surface type and dig permission
+function TranslateGroundHash(hash)
+    local groundData = Config.groundHashes[hash]
+    if groundData then
+        return groundData.name, groundData.canDig
+    else
+        return "Unknown Surface", false
+    end
+end
+
+function StartDigging()
+    local playerPed = PlayerPedId()
+    local groundHash = GetGroundHash(playerPed)
+    local surfaceType, canDig = TranslateGroundHash(groundHash)
+
+    if canDig then
+        IsDigging = true
+        DigText = Config.DiggingText
+        ShovelHoldingAnimation()
+        
+        -- Start the digging animation and wait for it to play
+        Citizen.Wait(3400)  -- Wait for the animation to start
+
+        print("Digging started on surface: " .. surfaceType)
+        
+        -- Trigger the event to spawn the prop
+        TriggerEvent('StartBuryingEvent')  -- This will spawn the prop as part of the digging process
+    else
+        print("You cannot dig on this surface: " .. surfaceType)
+        IsDigging = false
+    end
+end
+
+Citizen.CreateThread(function()
+    while true do 
+        local sleep = 500 -- Default wait time
+        local playerPed = PlayerPedId()
+
+        -- Handle scenarios where shovel should be removed
+        if IsPedRagdoll(playerPed) or IsPedInAnyVehicle(playerPed, false) then 
+            RemoveShovel()
+            ShovelIsActive = false
+            IsDigging = false
+            DigText = Config.StartDiggingText
+        end
+
+        if ShovelIsActive then 
+            sleep = 10 -- Reduced wait time for responsiveness
+
+            -- Show the prompt to start digging
+            DrawText3D(DigText, GetEntityCoords(playerPed))
+            if IsControlJustPressed(0, Config.DigButton) then 
+                Citizen.Wait(500)  -- Wait half a second for `E`
+                StartDigging()  -- Start digging action
+            end
+        end
+
+        Citizen.Wait(sleep)
+    end
+end)
+
+-- Function to handle the shovel holding animation
+function ShovelHoldingAnimation()
+    local HoldingAnimDict = Config.ShovelAnimDict
+    RequestAnimDict(HoldingAnimDict)
+    while not HasAnimDictLoaded(HoldingAnimDict) do
+        Citizen.Wait(150)
+    end
+
+    DetachEntity(ShovelObject, false, false)
+    local ShovelDiggingBone = GetPedBoneIndex(PlayerPedId(), Config.ShovelDiggingBone)
+    AttachEntityToEntity(ShovelObject, PlayerPedId(), ShovelDiggingBone, Config.ShovelDiggingPlacement.XCoords, Config.ShovelDiggingPlacement.YCoords, Config.ShovelDiggingPlacement.ZCoords, Config.ShovelDiggingPlacement.XRotation, Config.ShovelDiggingPlacement.YRotation, Config.ShovelDiggingPlacement.ZRotation, true, true, true, true, 1, true)
+    TaskPlayAnim(PlayerPedId(), HoldingAnimDict, Config.ShovelAnim, 1.0, 1.5, -1, 2, 0.79, nil, nil, nil)
+end
+
+-- Function to exit digging mode
+function ExitDigging()
+    StopAnimTask(PlayerPedId(), Config.ShovelAnimDict, Config.ShovelAnim, 1.5)
+    DetachEntity(ShovelObject, false, false)
+    local ShovelIdleBone = GetPedBoneIndex(PlayerPedId(), Config.ShovelIdleBone)
+    AttachEntityToEntity(ShovelObject, PlayerPedId(), ShovelIdleBone, Config.ShovelIdlePlacement.XCoords, Config.ShovelIdlePlacement.YCoords, Config.ShovelIdlePlacement.ZCoords, Config.ShovelIdlePlacement.XRotation, Config.ShovelIdlePlacement.YRotation, Config.ShovelIdlePlacement.ZRotation, true, true, true, true, 1, true)
+end
+
+-- Function to remove the shovel
+function RemoveShovel()
+    StopAnimTask(PlayerPedId(), Config.ShovelAnimDict, Config.ShovelAnim, 1.5)
+    DetachEntity(ShovelObject, false, false)
+    if DoesEntityExist(ShovelObject) then 
+        DeleteObject(ShovelObject)
+    end
+    ShovelIsActive = false
+end
+
+-- Event to handle shovel usage
+RegisterNetEvent("SxM-bury:UseShovel", function()
+    if ShovelIsActive == false then 
+        GrabShovel()
+        ShovelIsActive = true 
+    elseif ShovelIsActive == true then 
+        RemoveShovel()
+    end
+end)
+
+-- Function to grab the shovel
+function GrabShovel()
+    if DoesEntityExist(ShovelObject) then 
+        DeleteObject(ShovelObject)
+    end
+    local ShovelModel = Config.ShovelObject
+    RequestModel(ShovelModel)
+    while not HasModelLoaded(ShovelModel) do
+        Citizen.Wait(150)
+    end
+    ShovelObject = CreateObjectNoOffset(ShovelModel, GetEntityCoords(PlayerPedId()), true, true, false)
+    SetEntityCollision(ShovelObject, false, false)
+    local ShovelIdleBone = GetPedBoneIndex(PlayerPedId(), Config.ShovelIdleBone)
+    AttachEntityToEntity(ShovelObject, PlayerPedId(), ShovelIdleBone, Config.ShovelIdlePlacement.XCoords, Config.ShovelIdlePlacement.YCoords, Config.ShovelIdlePlacement.ZCoords, Config.ShovelIdlePlacement.XRotation, Config.ShovelIdlePlacement.YRotation, Config.ShovelIdlePlacement.ZRotation, true, true, true, true, 1, true)
+end
+
+-- Event to clean up the shovel on resource stop
+AddEventHandler('onResourceStop', function(resourceName)
+    if GetCurrentResourceName() == resourceName then
+        DeleteObject(ShovelObject)
+    end
+end)
+
+-- Function to draw 3D text
+function DrawText3D(msg, coords)
+    AddTextEntry('floatingHelpNotification', msg)
+    SetFloatingHelpTextWorldPosition(1, coords)
+    SetFloatingHelpTextStyle(1, 1, 2, -1, 3, 0)
+    BeginTextCommandDisplayHelp('floatingHelpNotification')
+    EndTextCommandDisplayHelp(2, false, false, -1)
+end
+
+
 -- Carry and drop in trunk
 
 local attachment = {
@@ -224,135 +478,167 @@ Citizen.CreateThread(function()
 end)
 
 
-
--- Client-Side Script
-
--- Variables to store the text and position received from the server
-local displayText = ""
-local textPosition = nil
-local isNearTrunk = false  -- Variable to check proximity to the trunk
-
-Citizen.CreateThread(function()
-    while true do
-        Citizen.Wait(0) -- Prevents crashing, runs every frame
-
-        local playerPed = PlayerPedId()
-        local vehicle = GetClosestVehicle(GetEntityCoords(playerPed), 5.0, 0, 70)
-
-        if vehicle ~= 0 then
-            -- Get the trunk bone index and position
-            local trunkBoneIndex = GetEntityBoneIndexByName(vehicle, "boot")
-            local trunkPos = GetWorldPositionOfEntityBone(vehicle, trunkBoneIndex)
-            local playerPos = GetEntityCoords(playerPed)
-
-            -- Calculate the distance between the player and the trunk
-            local distance = #(playerPos - trunkPos)
-
-            if distance <= 3.0 then
-                isNearTrunk = true  -- Player is near the trunk
-                -- Check if the player is in one of the specified animations
-                local inWritheAnimation = IsEntityPlayingAnim(playerPed, 'combat@damage@writhe', 'writhe_loop', 3)
-                local inDeadAnimation = IsEntityPlayingAnim(playerPed, 'dead', 'dead_a', 3)
-
-                if inWritheAnimation or inDeadAnimation then
-                    local animName = inWritheAnimation and "writhe_loop" or "dead_a"
-                    
-                    -- Send the animation data to the server
-                    TriggerServerEvent('notifyPlayerInAnimation', GetPlayerServerId(PlayerId()), animName, trunkBoneIndex, distance, trunkPos)
-                end
-
-            else
-                isNearTrunk = false -- Player is not near the trunk
-            end
-        else
-            isNearTrunk = false -- No vehicle nearby
-        end
-    end
-end)
-
-
-
--- Handle the broadcast from the server and update the existing text display for all clients
-RegisterNetEvent('receivePlayerAnimationInfo')
-AddEventHandler('receivePlayerAnimationInfo', function(playerId, animName, trunkBoneIndex, distance, trunkPos)
-    -- Update the display text and position with the data received from the server
-    displayText = string.format("Player %d in Animation: %s\nDistance: %.2f\nTrunk Bone ID: %d", playerId, animName, distance, trunkBoneIndex)
-    textPosition = trunkPos
-end)
-
--- Thread to draw the text only when there is data to display
-Citizen.CreateThread(function()
-    while true do
-        Citizen.Wait(0) -- This loop will run every frame to check if there's something to display
-
-        if displayText ~= "" and textPosition ~= nil then
-            -- If there's something to display, draw the text
-            -- DrawText3D(textPosition.x, textPosition.y, textPosition.z, displayText)
-        end
-    end
-end)
-
--- Variables to store the text and position received from the server
-local displayText = ""
-local textPosition = nil
-local isNearTrunk = false  -- Variable to check proximity to the trunk
-local wasNearTrunk = true  -- Track if the player was near the trunk in the previous frame
-
-Citizen.CreateThread(function()
-    while true do
-        Citizen.Wait(100) -- Check every 100ms
-
-        local playerPed = PlayerPedId()
-        local vehicle = GetClosestVehicle(GetEntityCoords(playerPed), 5.0, 0, 70)
-
-        if vehicle ~= 0 then
-            -- Get the trunk bone index and position
-            local trunkBoneIndex = GetEntityBoneIndexByName(vehicle, "boot")
-            local trunkPos = GetWorldPositionOfEntityBone(vehicle, trunkBoneIndex)
-            local playerPos = GetEntityCoords(playerPed)
-
-            -- Calculate the distance between the player and the trunk
-            local distance = #(playerPos - trunkPos)
-
-            if distance <= 3.0 then
-                isNearTrunk = true  -- Player is near the trunk
-
-            else
-                isNearTrunk = false -- Player is not near the trunk
-            end
-        else
-            isNearTrunk = false -- No vehicle nearby
-        end
-
-        -- Check if the player was near the trunk and now is not, trigger the drop
-        if carrying and not isNearTrunk and wasNearTrunk then
-            TriggerServerEvent('carry:server:stopCarry', carriedPlayer) -- Drop the target player
-            carrying = false -- Ensure carrying is reset so we don't trigger again
-        end
-
-        -- Update the tracking variable
-        wasNearTrunk = isNearTrunk
-    end
-end)
-
-
-
--- Carry animation
+-- client.lua
 
 local carrying = false
 local carriedPlayer = nil
-local carrierPlayer = nil -- Store the ID of the player carrying you
-local isNearTrunk = false -- Variable to check proximity to the trunk
-local wasNearTrunk = true -- Track if the player was near the trunk in the previous frame
+
+-- Function to find the closest vehicle and get its boot bone index
+local function findClosestVehicleWithBoot(radius)
+    local playerPed = PlayerPedId()
+    local playerCoords = GetEntityCoords(playerPed)
+    local vehicles = GetGamePool("CVehicle")
+    local closestDistance = -1
+    local closestVehicle = nil
+
+    for _, vehicle in ipairs(vehicles) do
+        local vehicleCoords = GetEntityCoords(vehicle)
+        local distance = #(vehicleCoords - playerCoords)
+        if closestDistance == -1 or distance < closestDistance then
+            closestDistance = distance
+            closestVehicle = vehicle
+        end
+    end
+
+    if closestDistance ~= -1 and closestDistance <= radius then
+        local bootBoneIndex = GetEntityBoneIndexByName(closestVehicle, "boot")
+        return closestVehicle, bootBoneIndex
+    else
+        return nil, nil
+    end
+end
+
+-- -- Function to draw 3D text
+-- local function DrawText3D(x, y, z, text)
+--     local onScreen, _x, _y = World3dToScreen2d(x, y, z)
+--     local px, py, pz = table.unpack(GetGameplayCamCoords())
+
+--     if onScreen then
+--         SetTextScale(0.35, 0.35)
+--         SetTextFont(4)
+--         SetTextProportional(1)
+--         SetTextColour(255, 255, 255, 215)
+--         SetTextEntry("STRING")
+--         SetTextCentre(1)
+--         AddTextComponentString(text)
+--         DrawText(_x, _y)
+--         local factor = (string.len(text)) / 370
+--         DrawRect(_x, _y + 0.0125, 0.015 + factor, 0.03, 41, 11, 41, 68)
+--     end
+-- end
+
+-- Function to attach the player to the vehicle boot with the 'flee_backward_loop_shopkeeper' animation
+RegisterNetEvent('carry:client:attachToBoot')
+AddEventHandler('carry:client:attachToBoot', function(vehicleNetId)
+    local vehicle = NetworkGetEntityFromNetworkId(vehicleNetId)
+    if DoesEntityExist(vehicle) then
+        local playerPed = PlayerPedId()
+        local bootBoneIndex = GetEntityBoneIndexByName(vehicle, "boot")
+
+        -- Adjust the position to properly align the player with the boot
+        local xOffset, yOffset, zOffset = -0.12, 0.15, 0.3  -- Modify these offsets as needed
+        
+        -- Adjust the rotation of the player relative to the vehicle
+        local xRot, yRot, zRot = 0.0, 0.0, 180.0  -- Adjust rotation as needed
+        
+        -- Adjust the heading (z-axis rotation) of the player relative to the vehicle
+        local heading = 25.0  -- Set your desired heading here (0.0 - 360.0)
+
+        -- Detach the player from any entity they are attached to
+        DetachEntity(playerPed, true, true)
+        
+        -- Clear any existing animations
+        ClearPedTasksImmediately(playerPed)
+
+        -- Attach player to the vehicle boot with rotation and heading adjustments
+        AttachEntityToEntity(playerPed, vehicle, bootBoneIndex, xOffset, yOffset, zOffset, xRot, yRot, heading, false, false, false, false, 2, true)
+        
+        -- Load the 'random@mugging4' animation dictionary
+        RequestAnimDict("random@mugging4")
+        while not HasAnimDictLoaded("random@mugging4") do
+            Citizen.Wait(100)
+        end
+
+        -- Play the 'flee_backward_loop_shopkeeper' animation
+        TaskPlayAnim(playerPed, "random@mugging4", "flee_backward_loop_shopkeeper", 8.0, -8.0, -1, 1, 0, false, false, false)
+
+        -- Check if the trunk is broken and handle accordingly
+        Citizen.CreateThread(function()
+            while true do
+                Citizen.Wait(100)
+
+                -- Check if the trunk is broken (door index 5)
+                if IsVehicleDoorDamaged(vehicle, 5) then
+                    -- Trigger server event to sync detachment and ragdoll
+                    TriggerServerEvent('carry:server:detachAndRagdoll', vehicleNetId, GetPlayerServerId(PlayerId()))
+
+                    -- Break out of the loop as the trunk is already broken
+                    break
+                end
+            end
+        end)
+    end
+end)
+
+-- Client event to handle detaching and ragdoll
+RegisterNetEvent('carry:client:detachAndRagdoll')
+AddEventHandler('carry:client:detachAndRagdoll', function(vehicleNetId, playerServerId)
+    local vehicle = NetworkGetEntityFromNetworkId(vehicleNetId)
+    local playerPed = GetPlayerPed(GetPlayerFromServerId(playerServerId))
+
+    if DoesEntityExist(vehicle) and DoesEntityExist(playerPed) then
+        -- Detach the player from the vehicle
+        DetachEntity(playerPed, true, true)
+        
+        -- Put the player in ragdoll mode for 10 seconds
+        SetPedToRagdoll(playerPed, 10000, 10000, 0, false, false, false)
+    end
+end)
+
+
+
+
+
+Citizen.CreateThread(function()
+    while true do
+        local vehicle, bootBoneIndex = findClosestVehicleWithBoot(3.0)  -- 3-meter radius
+        if vehicle and bootBoneIndex ~= -1 then
+            local bootCoords = GetWorldPositionOfEntityBone(vehicle, bootBoneIndex)
+            local lockStatus = GetVehicleDoorLockStatus(vehicle)
+            if GetVehicleDoorAngleRatio(vehicle, 5) > 0 then -- Check if trunk (door index 5) is open
+                -- DrawText3D(bootCoords.x, bootCoords.y, bootCoords.z + 0.5, "Press [E] to Place Body")
+                
+                if IsControlJustPressed(0, 38) and carrying then -- 'E' key is pressed (default key code 38)
+                    print("E key pressed - attempting to place body in trunk")  -- Debug message
+
+                    local playerPed = PlayerPedId()
+                    local targetPed = GetPlayerPed(GetPlayerFromServerId(carriedPlayer))
+                    local vehicleNetId = NetworkGetNetworkIdFromEntity(vehicle)
+
+                    -- Detach the player from the carrying ped and trigger the server event
+                    DetachEntity(targetPed, true, true)
+                    TriggerServerEvent('carry:server:detachAndAttachToBoot', carriedPlayer, vehicleNetId)
+                    
+                    -- Clear carrying status
+                    carrying = false
+                    carriedPlayer = nil
+                end
+            else
+                if lockStatus == 2 then
+                    -- DrawText3D(bootCoords.x, bootCoords.y, bootCoords.z + 0.5, "Trunk Locked")
+                else
+                    -- DrawText3D(bootCoords.x, bootCoords.y, bootCoords.z + 0.5, "Trunk Closed")
+                end
+            end
+        end
+        Wait(0)  -- Continuously check
+    end
+end)
+
 
 -- Function to carry a player
 RegisterNetEvent('carry:client:startCarry')
 AddEventHandler('carry:client:startCarry', function(targetPlayer)
-    if not isNearTrunk then
-        print("You must be near a trunk to carry someone.")
-        return -- Block the action if not near the trunk
-    end
-
     local playerPed = PlayerPedId()
     local targetPed = GetPlayerPed(GetPlayerFromServerId(targetPlayer))
 
@@ -360,10 +646,21 @@ AddEventHandler('carry:client:startCarry', function(targetPlayer)
         return -- Prevent multiple carry actions
     end
 
+    -- Check if the player is currently in the boot and detach them
+    if bootOccupied then
+        DetachEntity(targetPed, true, true)
+        -- Reset the bootOccupied status
+        bootOccupied = false
+        -- Notify the server that the boot is no longer occupied
+        local vehicle = GetVehiclePedIsIn(targetPed, false)
+        if DoesEntityExist(vehicle) then
+            local vehicleNetId = NetworkGetNetworkIdFromEntity(vehicle)
+            TriggerServerEvent('carry:server:updateBootStatus', vehicleNetId, false)
+        end
+    end
+
     carrying = true
     carriedPlayer = targetPlayer
-
-    print("You (ID:", GetPlayerServerId(PlayerId()), ") are carrying player ID:", targetPlayer) -- Debug message
 
     RequestAnimDict("missfinale_c2mcs_1")
     while not HasAnimDictLoaded("missfinale_c2mcs_1") do
@@ -375,6 +672,7 @@ AddEventHandler('carry:client:startCarry', function(targetPlayer)
     AttachEntityToEntity(targetPed, playerPed, 0, 0.26, 0.15, 0.63, 0.5, 0.5, 0.0, false, false, false, false, 2, false)
 end)
 
+
 -- Function to stop carrying a player
 RegisterNetEvent('carry:client:stopCarry')
 AddEventHandler('carry:client:stopCarry', function()
@@ -384,8 +682,6 @@ AddEventHandler('carry:client:stopCarry', function()
         local targetPed = GetPlayerPed(GetPlayerFromServerId(carriedPlayer))
         DetachEntity(targetPed, true, true)
         ClearPedTasksImmediately(targetPed)
-
-        print("You (ID:", GetPlayerServerId(PlayerId()), ") have stopped carrying player ID:", carriedPlayer) -- Debug message
     end
     
     DetachEntity(playerPed, true, true)
@@ -397,11 +693,8 @@ end)
 
 -- Triggered when being carried
 RegisterNetEvent('carry:client:beingCarried')
-AddEventHandler('carry:client:beingCarried', function(carrierPlayerId)
+AddEventHandler('carry:client:beingCarried', function(carrierPlayer)
     local playerPed = PlayerPedId()
-    carrierPlayer = carrierPlayerId
-
-    print("You (ID:", GetPlayerServerId(PlayerId()), ") are being carried by player ID:", carrierPlayerId) -- Debug message
 
     RequestAnimDict("nm")
     while not HasAnimDictLoaded("nm") do
@@ -410,30 +703,23 @@ AddEventHandler('carry:client:beingCarried', function(carrierPlayerId)
 
     TaskPlayAnim(playerPed, "nm", "firemans_carry", 8.0, -8.0, -1, 33, 0, false, false, false)
     
-    local carrierPed = GetPlayerPed(GetPlayerFromServerId(carrierPlayerId))
+    local carrierPed = GetPlayerPed(GetPlayerFromServerId(carrierPlayer))
     AttachEntityToEntity(playerPed, carrierPed, 0, 0.26, 0.15, 0.63, 0.5, 0.5, 0.0, false, false, false, false, 2, false)
 end)
 
 -- Command to start carrying a player
 RegisterCommand('carry', function()
     local closestPlayer = GetClosestPlayer()
-    local playerPed = PlayerPedId()
-    local vehicle = GetClosestVehicle(GetEntityCoords(playerPed), 5.0, 0, 70)
+    local vehicle, bootBoneIndex = findClosestVehicleWithBoot(3.0)  -- Ensure player is near a vehicle boot
 
-    if vehicle ~= 0 then
-        -- Check if the trunk is open or destroyed
-        local trunkDoorIndex = 5 -- The trunk door index
-        if GetVehicleDoorAngleRatio(vehicle, trunkDoorIndex) > 0 or IsVehicleDoorDamaged(vehicle, trunkDoorIndex) then
-            if closestPlayer then
-                TriggerServerEvent('carry:server:startCarry', GetPlayerServerId(closestPlayer))
-            else
-                print("No player nearby to carry")
-            end
+    if closestPlayer and vehicle and bootBoneIndex ~= -1 then
+        if GetVehicleDoorAngleRatio(vehicle, 5) > 0 then  -- Ensure trunk is open
+            TriggerServerEvent('carry:server:startCarry', GetPlayerServerId(closestPlayer))
         else
-            print("The trunk is closed. You cannot carry anyone.")
+            print("The trunk must be open to carry a player.")
         end
     else
-        print("No vehicle nearby.")
+        print("No player nearby to carry or not near a vehicle boot")
     end
 end)
 
@@ -472,148 +758,6 @@ function GetClosestPlayer()
         return nil
     end
 end
-
--- Thread to monitor proximity to the trunk and stop carrying if out of range
-Citizen.CreateThread(function()
-    while true do
-        Citizen.Wait(100) -- Check every 100ms
-
-        local playerPed = PlayerPedId()
-        local vehicle = GetClosestVehicle(GetEntityCoords(playerPed), 5.0, 0, 70)
-
-        if vehicle ~= 0 then
-            -- Get the trunk bone index and position
-            local trunkBoneIndex = GetEntityBoneIndexByName(vehicle, "boot")
-            local trunkPos = GetWorldPositionOfEntityBone(vehicle, trunkBoneIndex)
-            local playerPos = GetEntityCoords(playerPed)
-
-            -- Calculate the distance between the player and the trunk
-            local distance = #(playerPos - trunkPos)
-
-            if distance <= 3.0 then
-                isNearTrunk = true  -- Player is near the trunk
-            else
-                isNearTrunk = false -- Player is not near the trunk
-            end
-        else
-            isNearTrunk = false -- No vehicle nearby
-        end
-
-        -- Check if the player was near the trunk and now is not, trigger the drop and debug
-        if carrying and not isNearTrunk and wasNearTrunk then
-            print("Player ID:", GetPlayerServerId(PlayerId()), "moved out of radius while carrying player ID:", carriedPlayer)
-            TriggerServerEvent('carry:server:stopCarry', carriedPlayer) -- Drop the target player
-        end
-
-        -- Update the tracking variable
-        wasNearTrunk = isNearTrunk
-    end
-end)
-Citizen.CreateThread(function()
-    while true do
-        Citizen.Wait(0) -- Check every frame
-
-        if isNearTrunk and carrying then
-            -- Check if the player presses the "E" key
-            if IsControlJustReleased(0, 38) then -- 38 is the default control ID for the "E" key
-                local playerPed = PlayerPedId()
-                local vehicle = GetClosestVehicle(GetEntityCoords(playerPed), 5.0, 0, 70)
-                
-                if vehicle ~= 0 then
-                    -- Check if the trunk is open
-                    if GetVehicleDoorAngleRatio(vehicle, 5) > 0 then
-                        -- Get the trunk bone index
-                        local trunkBoneIndex = GetEntityBoneIndexByName(vehicle, "bodyshell")
-
-                        -- Get the network ID of the vehicle to pass to the server
-                        local vehicleNetId = NetworkGetNetworkIdFromEntity(vehicle)
-
-                        -- Trigger the server event to handle the attachment
-                        TriggerServerEvent('carry:server:attachToTrunk', GetPlayerServerId(PlayerId()), carriedPlayer, vehicleNetId, trunkBoneIndex)
-
-                        -- Reset carrying state on the client
-                        carrying = false
-                    else
-                        -- Optionally, notify the player that the trunk is closed
-                        print("Trunk is closed. Open it before placing the body.")
-                    end
-                end
-            end
-        end
-    end
-end)
-
-
-
--- Listen for the server's response with the carry status
-RegisterNetEvent('carry:client:sendCarryStatus')
-AddEventHandler('carry:client:sendCarryStatus', function(isCarrying, carriedPlayerId)
-    if isCarrying then
-        local message = "You are carrying player ID: " .. tostring(carriedPlayerId)
-        TriggerEvent('chat:addMessage', { args = {"DEBUG", message} })
-    else
-        local message = "You are not carrying anyone."
-        TriggerEvent('chat:addMessage', { args = {"DEBUG", message} })
-    end
-end)
-
-RegisterNetEvent('carry:client:attachToTrunk')
-AddEventHandler('carry:client:attachToTrunk', function(carrierPlayerId, targetPlayerId, vehicleNetId, trunkBoneIndex)
-    local carrierPed = GetPlayerPed(GetPlayerFromServerId(carrierPlayerId))
-    local targetPed = GetPlayerPed(GetPlayerFromServerId(targetPlayerId))
-    local vehicle = NetworkGetEntityFromNetworkId(vehicleNetId)
-
-    -- Detach the carried player from the carrier
-    DetachEntity(targetPed, true, true)
-    ClearPedTasksImmediately(targetPed)
-
-    -- Attach the carried player to the trunk's bone
-    AttachEntityToEntity(targetPed, vehicle, trunkBoneIndex,  0.15, -1.75, 0.96, 0.0, 0.0, 104.0, false, false, false, false, 2, false)
-
-    -- Stop the carrying animation for the carrying player
-    ClearPedTasksImmediately(carrierPed)
-
-    print("Carried player has been detached from carrier and attached to the trunk.")
-end)
-
-
-
-Citizen.CreateThread(function()
-    local trunkDestroyed = false  -- Flag to track if the trunk has been destroyed
-
-    while true do
-        Citizen.Wait(100)  -- Check every 100 milliseconds; adjust this value as needed
-
-        -- Get the vehicle the player is currently driving
-        local playerPed = PlayerPedId()
-        local vehicle = GetVehiclePedIsIn(playerPed, false)
-
-        -- Check if the player is in a vehicle
-        if vehicle ~= 0 then
-            local trunkDoorIndex = 5  -- Trunk/boot door index
-
-            -- Check if the trunk is destroyed
-            if IsVehicleDoorDamaged(vehicle, trunkDoorIndex) then
-                if not trunkDestroyed then
-                    -- Trunk is destroyed and this is the first time detecting it
-                    print("The trunk/boot of the vehicle you are driving is destroyed.")
-                    trunkDestroyed = true  -- Set the flag to true
-                    -- Additional logic can be added here (e.g., notify server, detach entities)
-                end
-            else
-                -- Reset the flag if the trunk is repaired or the player changes vehicles
-                trunkDestroyed = false
-            end
-        else
-            -- Reset the flag if the player is not in a vehicle
-            trunkDestroyed = false
-        end
-    end
-end)
-
-
--- USE THIS WHEN YOU WANT TO ADD NEW GROUND HASH TYPES TO THE CONFIG KEEP CONFIG AND THIS UP TO DATE WITH EACH OTHER AS THAT WILL HELP YOU KNOW IF YOU HAVE THAT ALREADY IN THE CONFIG OR NOT 
-
 
 -- -- Control variable to determine if checks should be performed
 -- local shouldCheck = false
@@ -670,3 +814,47 @@ end)
 --         end
 --     end)
 -- end
+
+
+
+
+-- Citizen.CreateThread(function()
+--     while true do
+--         local playerPed = PlayerPedId() -- Get the player's ped
+--         local playerCoords = GetEntityCoords(playerPed) -- Get the player's coordinates
+
+--         local players = GetActivePlayers() -- Get all active players
+
+--         for _, targetPlayerId in ipairs(players) do
+--             if targetPlayerId ~= PlayerId() then -- Exclude the current player
+--                 local targetPed = GetPlayerPed(targetPlayerId) -- Get the target player's ped
+--                 local targetCoords = GetEntityCoords(targetPed) -- Get the target player's coordinates
+
+--                 local distance = #(targetCoords - playerCoords) -- Calculate distance between players
+
+--                 if distance <= 3.0 then -- Check if within 3 meters
+--                     -- List of animations to check for
+--                     local animationsToCheck = {
+--                         {animDict = 'mp_suicide', animName = 'pill'},
+--                         {animDict = 'anim@amb@business@weed@weed_inspecting_high_dry@', animName = 'weed_inspecting_high_base_inspector'},
+--                         {animDict = 'dead', animName = 'dead_a'},
+--                         {animDict = 'veh@low@front_ps@idle_duck', animName = 'sit'},
+--                         {animDict = 'combat@damage@writhe', animName = 'writhe_loop'}, -- Last Stand animation
+--                         {animDict = 'veh@low@front_ps@idle_duck', animName = 'sit'}, -- Sitting animation in vehicle
+--                         -- Add more animations if needed
+--                     }
+
+--                     for _, anim in ipairs(animationsToCheck) do
+--                         if IsEntityPlayingAnim(targetPed, anim.animDict, anim.animName, 3) then
+--                             print("Player " .. GetPlayerName(targetPlayerId) .. " is playing the animation " .. anim.animName .. " from " .. anim.animDict)
+--                         else
+--                             print("Player " .. GetPlayerName(targetPlayerId) .. " is not playing any specified animations.")
+--                         end
+--                     end
+--                 end
+--             end
+--         end
+
+--         Citizen.Wait(5000) -- Wait for 5 seconds before the next check
+--     end
+-- end)
