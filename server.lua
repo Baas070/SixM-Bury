@@ -19,73 +19,92 @@ end, true)  -- true indicates this command is restricted to admins (or the serve
 
 
 
+-- Table to store the count of adjustments per object ID
+local objectAdjustments = {}
+local objectLowerings = {}
+
+-- Event to handle the height adjustment
 RegisterServerEvent('adjustObjectHeight')
 AddEventHandler('adjustObjectHeight', function(objectId)
-    TriggerClientEvent('adjustObjectHeightOnClient', -1, objectId)
-end)
+    -- Initialize the counts for this object ID if they don't exist
+    if not objectAdjustments[objectId] then
+        objectAdjustments[objectId] = 0
+    end
+    if not objectLowerings[objectId] then
+        objectLowerings[objectId] = 0
+    end
 
+    -- If both counters are 0, we start with height adjustment
+    if objectAdjustments[objectId] < 13 and objectLowerings[objectId] == 0 then
+        -- Increment the height adjustment count
+        objectAdjustments[objectId] = objectAdjustments[objectId] + 1
 
+        -- Trigger the height adjustment event on all clients
+        TriggerClientEvent('adjustObjectHeightOnClient', -1, objectId)
 
-local QBCore = exports['qb-core']:GetCoreObject()
+    elseif objectAdjustments[objectId] == 13 and objectLowerings[objectId] < 13 then
+        -- If height adjustment is maxed out, start lowering the height
+        objectLowerings[objectId] = objectLowerings[objectId] + 1
 
--- Create usable shovel item
-QBCore.Functions.CreateUseableItem(Config.ShovelItem, function(source, item)
-    local Player = QBCore.Functions.GetPlayer(source)
-    if Player.Functions.GetItemByName(item.name) then
-        TriggerClientEvent("SxM-bury:UseShovel", source, item.name)
+        -- Trigger the lowering event on all clients
+        TriggerClientEvent('lowerObjectHeightOnClient', -1, objectId)
+
+    elseif objectAdjustments[objectId] == 13 and objectLowerings[objectId] == 13 then
+        -- Reset both counters when both have reached 13
+        objectAdjustments[objectId] = 0
+        objectLowerings[objectId] = 0
+        print("Object ID: " .. objectId .. " counters reset after reaching limits.")
     end
 end)
 
--- -- Server event to trigger the particle effect and attach dirt prop on all clients
--- RegisterNetEvent('SxM-bury:PlayParticleEffect')
--- AddEventHandler('SxM-bury:PlayParticleEffect', function(shovelNetId)
---     -- Broadcast the event to all clients to attach the dirt prop and play the particle effect
---     TriggerClientEvent('SxM-bury:PlayParticleOnShovel', -1, shovelNetId)
--- end)
+-- Command to debug and see how many times the height has been adjusted and lowered per object ID
+RegisterCommand('debugAdjustments', function(source, args, rawCommand)
+    -- Output the adjustment counts to the console
+    print("Height Adjustment Counts Per Object ID:")
+    for objectId, count in pairs(objectAdjustments) do
+        print("Object ID: " .. objectId .. " - Adjustments: " .. count)
+    end
+    print("Height Lowering Counts Per Object ID:")
+    for objectId, count in pairs(objectLowerings) do
+        print("Object ID: " .. objectId .. " - Lowerings: " .. count)
+    end
+end, true)  -- true means the command can be executed by server console/admin only
 
--- -- Server event to handle dirt prop detachment on all clients
--- RegisterNetEvent('SxM-bury:DetachDirtProp')
--- AddEventHandler('SxM-bury:DetachDirtProp', function()
---     -- Broadcast the event to all clients to detach the dirt prop
---     TriggerClientEvent('SxM-bury:DetachDirtPropClient', -1)
--- end)
 
--- local DirtPiles = {}
 
--- RegisterNetEvent('SxM-bury:StoreDirtPileData')
--- AddEventHandler('SxM-bury:StoreDirtPileData', function(dirtPileData)
---     -- Check if a dirt pile already exists at this location
---     local found = false
---     for i, pile in ipairs(DirtPiles) do
---         if pile.x == dirtPileData.x and pile.y == dirtPileData.y and pile.z == dirtPileData.z then
---             -- Update the existing dirt pile data
---             DirtPiles[i] = dirtPileData
---             found = true
---             print("Updated existing dirt pile at coordinates: " .. dirtPileData.x .. ", " .. dirtPileData.y .. ", " .. dirtPileData.z)
---             break
---         end
---     end
-    
---     -- If not found, add it as a new entry
---     if not found then
---         table.insert(DirtPiles, dirtPileData)
---         print("Stored new dirt pile data at coordinates: " .. dirtPileData.x .. ", " .. dirtPileData.y .. ", " .. dirtPileData.z)
---     end
--- end)
 
--- -- Command to retrieve all stored dirt pile data
--- RegisterCommand('getDirtPiles', function(source, args, rawCommand)
---     print("All stored dirt piles:")
---     for i, dirtPile in ipairs(DirtPiles) do
---         print("Dirt Pile #" .. i .. ": " .. dirtPile.x .. ", " .. dirtPile.y .. ", " .. dirtPile.z .. ", height: " .. dirtPile.height .. ", heading: " .. dirtPile.heading .. ", bury count: " .. dirtPile.buryCount)
---     end
--- end, true)
 
--- RegisterNetEvent('SxM-bury:RequestDirtPileData')
--- AddEventHandler('SxM-bury:RequestDirtPileData', function()
---     local _source = source
---     TriggerClientEvent('SxM-bury:ReceiveDirtPileData', _source, DirtPiles)
--- end)
+local Framework = Config.Framework
+local QBCore = nil
+local ESX = nil
+
+-- Framework initialization
+if Framework == "QBCore" then
+    QBCore = exports['qb-core']:GetCoreObject()
+elseif Framework == "ESX" then
+    ESX = exports['es_extended']:getSharedObject()
+end
+
+-- Create usable shovel item based on the framework
+if Framework == "QBCore" then
+    -- QBCore version of usable item
+    QBCore.Functions.CreateUseableItem(Config.ShovelItem, function(source, item)
+        local Player = QBCore.Functions.GetPlayer(source)
+        if Player.Functions.GetItemByName(item.name) then
+            TriggerClientEvent("SxM-bury:UseShovel", source, item.name)
+        end
+    end)
+
+elseif Framework == "ESX" then
+    -- ESX version of usable item
+    ESX.RegisterUsableItem(Config.ShovelItem, function(source)
+        local xPlayer = ESX.GetPlayerFromId(source)
+        if xPlayer then
+            TriggerClientEvent("SxM-bury:UseShovel", source, Config.ShovelItem)
+        end
+    end)
+end
+
 
 
 
@@ -164,34 +183,119 @@ end)
 
 
 
--- server.lua
 
+
+-- Server-Side Script
+
+RegisterServerEvent('notifyPlayerInAnimation')
+AddEventHandler('notifyPlayerInAnimation', function(playerId, animName, trunkBoneIndex, distance, trunkPos)
+    -- Broadcast the animation info to all clients
+    TriggerClientEvent('receivePlayerAnimationInfo', -1, playerId, animName, trunkBoneIndex, distance, trunkPos)
+end)
+
+-- Server-side tracking of who is carrying whom
+local carryRelationships = {}
+
+-- Event to start carrying a player
 RegisterServerEvent('carry:server:startCarry')
 AddEventHandler('carry:server:startCarry', function(targetPlayer)
     local sourcePlayer = source
 
+    -- Store the carry relationship on the server
+    carryRelationships[targetPlayer] = sourcePlayer
+
     -- Notify both players to start animations
     TriggerClientEvent('carry:client:startCarry', sourcePlayer, targetPlayer)
     TriggerClientEvent('carry:client:beingCarried', targetPlayer, sourcePlayer)
+    
+    print("Player ID", sourcePlayer, "is now carrying player ID", targetPlayer) -- Server-side debug
 end)
 
+-- Event to stop carrying a player
 RegisterServerEvent('carry:server:stopCarry')
 AddEventHandler('carry:server:stopCarry', function(targetPlayer)
     local sourcePlayer = source
 
+    -- Clear the carry relationship on the server
+    if carryRelationships[targetPlayer] == sourcePlayer then
+        carryRelationships[targetPlayer] = nil
+    end
+
     -- Notify both players to stop the animations and detach entities
     TriggerClientEvent('carry:client:stopCarry', sourcePlayer)
     TriggerClientEvent('carry:client:stopCarry', targetPlayer)
+    
+    print("Player ID", sourcePlayer, "has stopped carrying player ID", targetPlayer) -- Server-side debug
 end)
 
-RegisterNetEvent('carry:server:detachAndAttachToBoot')
-AddEventHandler('carry:server:detachAndAttachToBoot', function(targetPlayer, vehicleNetId)
-    -- Trigger the client event to attach the player to the vehicle boot
-    TriggerClientEvent('carry:client:attachToBoot', targetPlayer, vehicleNetId)
+-- Command to debug relationships (Optional for admins)
+RegisterCommand('debugcarry', function(source, args, rawCommand)
+    print("Current carry relationships:", carryRelationships) -- Debug all current carry relationships
+end, true) -- The 'true' here makes the command only executable by admins
+
+
+-- Event to check the carry status for a specific player
+RegisterServerEvent('carry:server:checkCarryStatus')
+AddEventHandler('carry:server:checkCarryStatus', function()
+    local sourcePlayer = source
+
+    -- Check if the player is carrying someone
+    local targetPlayer = nil
+    for carried, carrier in pairs(carryRelationships) do
+        if carrier == sourcePlayer then
+            targetPlayer = carried
+            break
+        end
+    end
+
+    -- Send the carry status back to the client
+    local isCarrying = targetPlayer ~= nil
+    TriggerClientEvent('carry:client:sendCarryStatus', sourcePlayer, isCarrying, targetPlayer)
 end)
 
-RegisterNetEvent('carry:server:detachAndRagdoll')
-AddEventHandler('carry:server:detachAndRagdoll', function(vehicleNetId, playerServerId)
-    -- Trigger the client event for all players, passing the vehicle ID and the player to detach
-    TriggerClientEvent('carry:client:detachAndRagdoll', -1, vehicleNetId, playerServerId)
+
+-- Server-Side Script
+
+RegisterServerEvent('carry:server:attachToTrunk')
+AddEventHandler('carry:server:attachToTrunk', function(carrierPlayerId, targetPlayerId, vehicleNetId, trunkBoneIndex)
+    -- Broadcast to all clients to handle the attachment process
+    TriggerClientEvent('carry:client:attachToTrunk', -1, carrierPlayerId, targetPlayerId, vehicleNetId, trunkBoneIndex)
 end)
+
+-- Table to store player and targeted ID data on the server
+local playerTargetData = {}
+
+-- Handle receiving player and object data from the client
+RegisterServerEvent('sendPlayerAndObjectData')
+AddEventHandler('sendPlayerAndObjectData', function(playerSrc, objectId)
+    -- Debugging: Print the received player src and object ID
+    print("Received from client -> Player src: " .. playerSrc .. ", Object ID: " .. objectId)
+
+    -- Store the player src as a targeted ID
+    playerTargetData[playerSrc] = objectId
+
+    -- Send the targeted player ID and object ID back to the client
+    TriggerClientEvent('receiveTargetedData', playerSrc, playerSrc, objectId)
+
+    -- Debugging: Print the stored data
+    print("Stored targeted ID for player src: " .. playerSrc .. " -> Targeted Object ID: " .. objectId)
+end)
+
+-- Example function to retrieve all stored data for debugging purposes
+RegisterCommand('showStoredData', function(source, args, rawCommand)
+    print("Current stored player-targeted data:")
+    for playerSrc, objectId in pairs(playerTargetData) do
+        print("Player src: " .. playerSrc .. " has targeted Object ID: " .. objectId)
+    end
+end, true)
+
+
+-- Server-side event to handle player movement
+RegisterNetEvent("dropPlayerAtCoords")
+AddEventHandler("dropPlayerAtCoords", function(targetPlayerId, coords)
+    -- Ensure the target player ID is valid
+    if targetPlayerId then
+        TriggerClientEvent("dropPlayerAtCoords", targetPlayerId, coords)
+    end
+end)
+
